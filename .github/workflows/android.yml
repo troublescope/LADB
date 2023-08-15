@@ -1,5 +1,6 @@
 name: CI
 on:
+  workflow_dispatch:
   push:
     tags:
       - v*
@@ -91,7 +92,5 @@ jobs:
             > MD5: ${{ env.APK_MD5 }}
           files: |
             LADB_${{ env.VERSION_TAG }}.apk
-          draft: ${{ github.event.inputs.dry-run != '' }}
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
