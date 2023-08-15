@@ -9,6 +9,8 @@ jobs:
   check_wrapper:
     name: Validate Gradle Wrapper
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Clone repo
