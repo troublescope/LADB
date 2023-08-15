@@ -1,52 +1,95 @@
-name: Android CI
-
+name: CI
 on:
   push:
-    branches: [ "main" ]
+    tags:
+      - v*
   pull_request:
-    branches: [ "main" ]
 
 jobs:
+  check_wrapper:
+    name: Validate Gradle Wrapper
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v2
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v1
+
   build:
-
+    name: Build app
+    needs: check_wrapper
+    if: "!startsWith(github.event.head_commit.message, '[SKIP CI]')"
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: set up JDK 11
-      uses: actions/setup-java@v3
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-        cache: gradle
+      - name: Cancel previous runs
+        uses: styfle/cancel-workflow-action@0.5.0
+        with:
+          access_token: ${{ github.token }}
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-    - name: Build with Gradle
-      run: ./gradlew build
+      - name: Clone repo
+        uses: actions/checkout@v2
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
+      - name: Set up JDK 11
+        uses: actions/setup-java@v1
+        with:
+          java-version: 11
 
-    steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: app/build/outputs/apk/release/app-release.apk
-        asset_name: app-release.apk
-        asset_content_type: application/vnd.android.package-archive
+      - name: Copy CI gradle.properties
+        run: |
+          mkdir -p ~/.gradle
+          cp .github/runner-files/ci-gradle.properties ~/.gradle/gradle.properties
+
+      - name: Build app
+        uses: eskatos/gradle-command-action@v1
+        with:
+          arguments: assembleRelease
+          wrapper-cache-enabled: true
+          dependencies-cache-enabled: true
+          configuration-cache-enabled: true
+
+      # Sign APK and create release for tags
+
+      - name: Get tag name
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'troublescope/LADB'
+        id: get_tag_name
+        run: |
+          set -x
+          echo "VERSION_TAG=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
+
+      - name: Sign APK
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'troublescope/LADB'
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Clean up build artifacts
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'troublescope/LADB'
+        run: |
+          cp ${{ env.SIGNED_RELEASE_FILE }} LADB_${{ env.VERSION_TAG }}.apk
+          md5=`md5sum LADB_${{ env.VERSION_TAG }}.apk | awk '{ print $1 }'`
+          echo "APK_MD5=$md5" >> $GITHUB_ENV
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/') && github.repository == 'troublescope/LADB'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION_TAG }}
+          name: LADB ${{ env.VERSION_TAG }}
+          body: |
+            > MD5: ${{ env.APK_MD5 }}
+          files: |
+            LADB_${{ env.VERSION_TAG }}.apk
+          draft: ${{ github.event.inputs.dry-run != '' }}
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
